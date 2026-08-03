@@ -1,0 +1,22 @@
+{
+  "name": "whatsapp-vendor-os",
+  "version": "0.1.0",
+  "description": "WhatsApp Vendor OS - Phase 1 MVP (single vendor)",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "connect": "node src/whatsapp/testConnection.js",
+    "test:status": "node src/whatsapp/testPostStatus.js"
+  },
+  "dependencies": {
+    "@hapi/boom": "^10.0.1",
+    "@supabase/supabase-js": "^2.45.4",
+    "@whiskeysockets/baileys": "^7.0.0-rc14",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.0",
+    "node-cron": "^3.0.3",
+    "pino": "^9.4.0",
+    "qrcode-terminal": "^0.12.0"
+  }
+}
