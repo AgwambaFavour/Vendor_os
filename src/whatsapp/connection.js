@@ -96,37 +96,23 @@ export async function connectWhatsApp(handlers = {}) {
 
   if (handlers.onMessage) {
     sock.ev.on('messages.upsert', ({ messages, type }) => {
-      console.log('messages.upsert fired. type:', type, 'count:', messages.length);
-
       if (type !== 'notify') return;
 
       const selfJid = sock.user?.id ? jidNormalizedUser(sock.user.id) : null;
       const selfLid = sock.user?.lid ? jidNormalizedUser(sock.user.lid) : null;
 
       for (const msg of messages) {
-      const chatJid = jidNormalizedUser(msg.key.remoteJid);
-      const isSelfChat = (selfJid && chatJid === selfJid) || (selfLid && chatJid === selfLid);
-
-      if (msg.key.fromMe && !isSelfChat) continue;
-
-      handlers.onMessage(msg, sock, { isSelfChat });
-      }
-      console.log('selfJid:', selfJid);
-
-      for (const msg of messages) {
         const chatJid = jidNormalizedUser(msg.key.remoteJid);
-        const isSelfChat = selfJid && chatJid === selfJid;
+        const isSelfChat = (selfJid && chatJid === selfJid) || (selfLid && chatJid === selfLid);
+        const isGroupChat = chatJid.endsWith('@g.us');
 
-        console.log(
-          'chatJid:', chatJid,
-          'isSelfChat:', isSelfChat,
-          'fromMe:', msg.key.fromMe,
-          'hasImage:', !!msg.message?.imageMessage
-        );
+        // Ignore messages the bot sends to OTHER 1:1 chats (e.g. status
+        // posts, future auto-replies) — but let self-chat messages through
+        // (photo intake) and group messages through (for /register and
+        // future commands), since those are legitimate command channels.
+        if (msg.key.fromMe && !isSelfChat && !isGroupChat) continue;
 
-        if (msg.key.fromMe && !isSelfChat) continue;
-
-        handlers.onMessage(msg, sock, { isSelfChat });
+        handlers.onMessage(msg, sock, { isSelfChat, isGroupChat });
       }
     });
   }

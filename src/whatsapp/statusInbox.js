@@ -59,4 +59,24 @@ async function processImage(msg, sock, imageMessage) {
   } catch (err) {
     console.error('Failed to process forwarded image:', err);
   }
+  const groupJidList = await getGroupRecipients();
+
+    if (groupJidList.length === 0) {
+      console.warn(
+        'No groups registered — skipping group broadcast. Type /register ' +
+        'inside a group, or set GROUP_JID_LIST in .env for testing.'
+      );
+    } else {
+      for (const groupJid of groupJidList) {
+        try {
+          await sock.sendMessage(groupJid, { image: buffer, caption });
+          console.log(`Sent to group: ${groupJid}`);
+        } catch (err) {
+          console.error(`Failed to send to group ${groupJid}:`, err);
+        }
+      }
+    }
+
+    await new Promise((r) => setTimeout(r, DELAY_BETWEEN_POSTS_MS));
 }
+
