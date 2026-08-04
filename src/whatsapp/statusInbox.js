@@ -46,12 +46,12 @@ async function processImage(msg, sock, imageMessage) {
       return;
     }
 
-    await sock.sendMessage(
+    const result = await sock.sendMessage(
       'status@broadcast',
-      { image: buffer, caption: imageMessage.caption || '' },
-      { statusJidList, broadcast: true }
-    );
-
+  { image: buffer, caption: imageMessage.caption || '' },
+  { statusJidList, broadcast: true }
+      );
+    console.log('Send result:', JSON.stringify(result, null, 2));
     console.log(`Posted to Status (${statusJidList.length} recipients).`);
 
     // Small gap before the next queued image, if any.

@@ -89,6 +89,7 @@ export async function connectWhatsApp(handlers = {}) {
       }
     } else if (connection === 'open') {
       console.log('WhatsApp connection established.');
+      console.log('sock.user:', JSON.stringify(sock.user, null, 2));
       handlers.onReady?.(sock);
     }
   });
@@ -100,6 +101,16 @@ export async function connectWhatsApp(handlers = {}) {
       if (type !== 'notify') return;
 
       const selfJid = sock.user?.id ? jidNormalizedUser(sock.user.id) : null;
+      const selfLid = sock.user?.lid ? jidNormalizedUser(sock.user.lid) : null;
+
+      for (const msg of messages) {
+      const chatJid = jidNormalizedUser(msg.key.remoteJid);
+      const isSelfChat = (selfJid && chatJid === selfJid) || (selfLid && chatJid === selfLid);
+
+      if (msg.key.fromMe && !isSelfChat) continue;
+
+      handlers.onMessage(msg, sock, { isSelfChat });
+      }
       console.log('selfJid:', selfJid);
 
       for (const msg of messages) {
