@@ -1,6 +1,7 @@
 import { downloadMediaMessage } from '@whiskeysockets/baileys';
 import pino from 'pino';
 import { getStatusRecipients } from './statusRecipients.js';
+import { getGroupRecipients } from './groupRecipients.js';
 
 const logger = pino({ level: process.env.LOG_LEVEL || 'silent' });
 
@@ -36,6 +37,9 @@ async function processImage(msg, sock, imageMessage) {
       { logger, reuploadRequest: sock.updateMediaMessage }
     );
 
+    const caption = imageMessage.caption || '';
+
+    // --- Status post ---
     const statusJidList = await getStatusRecipients(sock);
 
     if (statusJidList.length === 0) {
@@ -43,23 +47,18 @@ async function processImage(msg, sock, imageMessage) {
         'No Status recipients configured — skipping post. Add customers ' +
         'to the database, or set STATUS_JID_LIST in .env for testing.'
       );
-      return;
+    } else {
+      const result = await sock.sendMessage(
+        'status@broadcast',
+        { image: buffer, caption },
+        { statusJidList, broadcast: true }
+      );
+      console.log('Send result:', JSON.stringify(result, null, 2));
+      console.log(`Posted to Status (${statusJidList.length} recipients).`);
     }
 
-    const result = await sock.sendMessage(
-      'status@broadcast',
-  { image: buffer, caption: imageMessage.caption || '' },
-  { statusJidList, broadcast: true }
-      );
-    console.log('Send result:', JSON.stringify(result, null, 2));
-    console.log(`Posted to Status (${statusJidList.length} recipients).`);
-
-    // Small gap before the next queued image, if any.
-    await new Promise((r) => setTimeout(r, DELAY_BETWEEN_POSTS_MS));
-  } catch (err) {
-    console.error('Failed to process forwarded image:', err);
-  }
-  const groupJidList = await getGroupRecipients();
+    // --- Group broadcast ---
+    const groupJidList = await getGroupRecipients();
 
     if (groupJidList.length === 0) {
       console.warn(
@@ -77,6 +76,9 @@ async function processImage(msg, sock, imageMessage) {
       }
     }
 
+    // Small gap before the next queued image, if any.
     await new Promise((r) => setTimeout(r, DELAY_BETWEEN_POSTS_MS));
+  } catch (err) {
+    console.error('Failed to process forwarded image:', err);
+  }
 }
-
