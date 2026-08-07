@@ -5,30 +5,35 @@ import { getGroupRecipients } from './groupRecipients.js';
 
 const logger = pino({ level: process.env.LOG_LEVEL || 'silent' });
 
-// Simple sequential queue: if you forward 10 photos at once, they arrive
-// as 10 near-simultaneous messages. Posting all 10 to Status in parallel
-// risks tripping WhatsApp's rate limits. This processes one at a time
-// with a short gap between sends instead.
+// Simple sequential queue: if you forward several photos/videos at once,
+// they arrive as near-simultaneous messages. Posting all of them in
+// parallel risks tripping WhatsApp's rate limits. This processes one at
+// a time with a short gap between sends instead.
 let queue = Promise.resolve();
 const DELAY_BETWEEN_POSTS_MS = 2500;
 
 /**
  * Call this from onMessage for every incoming message. It no-ops for
- * anything that isn't an image sent in your own self-chat.
+ * anything that isn't an image or video sent in your own self-chat.
  */
-export function handleForwardedImage(msg, sock, { isSelfChat }) {
+export function handleForwardedMedia(msg, sock, { isSelfChat }) {
   if (!isSelfChat) return;
 
   const imageMessage = msg.message?.imageMessage;
-  if (!imageMessage) return; // not a photo — ignore text, videos, etc. for now
+  const videoMessage = msg.message?.videoMessage;
+
+  if (!imageMessage && !videoMessage) return; // not media we handle — ignore text etc.
+
+  const mediaType = imageMessage ? 'image' : 'video';
+  const mediaMessage = imageMessage || videoMessage;
 
   // Chain onto the queue so posts happen strictly one after another.
-  queue = queue.then(() => processImage(msg, sock, imageMessage));
+  queue = queue.then(() => processMedia(msg, sock, mediaType, mediaMessage));
 }
 
-async function processImage(msg, sock, imageMessage) {
+async function processMedia(msg, sock, mediaType, mediaMessage) {
   try {
-    console.log('Forwarded image detected — downloading...');
+    console.log(`Forwarded ${mediaType} detected — downloading...`);
 
     const buffer = await downloadMediaMessage(
       msg,
@@ -37,7 +42,9 @@ async function processImage(msg, sock, imageMessage) {
       { logger, reuploadRequest: sock.updateMediaMessage }
     );
 
-    const caption = imageMessage.caption || '';
+    const caption = mediaMessage.caption || '';
+    // { image: buffer, caption } or { video: buffer, caption }
+    const content = { [mediaType]: buffer, caption };
 
     // --- Status post ---
     const statusJidList = await getStatusRecipients(sock);
@@ -50,11 +57,11 @@ async function processImage(msg, sock, imageMessage) {
     } else {
       const result = await sock.sendMessage(
         'status@broadcast',
-        { image: buffer, caption },
+        content,
         { statusJidList, broadcast: true }
       );
       console.log('Send result:', JSON.stringify(result, null, 2));
-      console.log(`Posted to Status (${statusJidList.length} recipients).`);
+      console.log(`Posted ${mediaType} to Status (${statusJidList.length} recipients).`);
     }
 
     // --- Group broadcast ---
@@ -68,17 +75,17 @@ async function processImage(msg, sock, imageMessage) {
     } else {
       for (const groupJid of groupJidList) {
         try {
-          await sock.sendMessage(groupJid, { image: buffer, caption });
-          console.log(`Sent to group: ${groupJid}`);
+          await sock.sendMessage(groupJid, content);
+          console.log(`Sent ${mediaType} to group: ${groupJid}`);
         } catch (err) {
-          console.error(`Failed to send to group ${groupJid}:`, err);
+          console.error(`Failed to send ${mediaType} to group ${groupJid}:`, err);
         }
       }
     }
 
-    // Small gap before the next queued image, if any.
+    // Small gap before the next queued item, if any.
     await new Promise((r) => setTimeout(r, DELAY_BETWEEN_POSTS_MS));
   } catch (err) {
-    console.error('Failed to process forwarded image:', err);
+    console.error(`Failed to process forwarded ${mediaType}:`, err);
   }
 }

@@ -41,7 +41,7 @@ export async function connectWhatsApp(handlers = {}) {
     // sync is partial/unreliable (confirmed on this project — some
     // accounts get nothing at all with the default browser/web config).
     browser: ['Windows', 'Chrome', '1.0.0'],
-    syncFullHistory: true,
+    syncFullHistory: false,
   });
 
   sock.ev.on('creds.update', saveCreds);
