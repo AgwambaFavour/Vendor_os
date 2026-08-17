@@ -10,25 +10,23 @@ import pino from 'pino';
 import qrcode from 'qrcode-terminal';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { updateVendorStatus } from '../db/vendors.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const AUTH_DIR = path.join(__dirname, '../../auth_state');
+const AUTH_ROOT = path.join(__dirname, '../../auth_state');
 
 const logger = pino({ level: process.env.LOG_LEVEL || 'silent' });
 
 /**
  * Starts (or resumes) a WhatsApp connection for a single vendor.
+ * Each vendor's session lives in its own folder under auth_state/,
+ * keyed by vendor.auth_state_key.
  *
- * Auth session is persisted to disk (AUTH_DIR) so the vendor only
- * has to scan the QR code once. On restart, the saved session is
- * reused automatically.
- *
- * @param {object} handlers - optional event callbacks
- * @param {(sock) => void} handlers.onReady - called once connected
- * @param {(msg) => void} handlers.onMessage - called on incoming messages
- * @returns {Promise<import('@whiskeysockets/baileys').WASocket>}
+ * @param {object} vendor - row from the `vendors` table
+ * @param {object} handlers - { onReady, onMessage, onQr }
  */
-export async function connectWhatsApp(handlers = {}) {
+export async function createVendorSocket(vendor, handlers = {}) {
+  const AUTH_DIR = path.join(AUTH_ROOT, vendor.auth_state_key);
   const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
   const { version } = await fetchLatestBaileysVersion();
 
@@ -36,20 +34,12 @@ export async function connectWhatsApp(handlers = {}) {
     version,
     auth: state,
     logger,
-    // Emulating a desktop client + syncFullHistory gets WhatsApp to push
-    // your full contact list on pairing. Without both of these, contact
-    // sync is partial/unreliable (confirmed on this project — some
-    // accounts get nothing at all with the default browser/web config).
     browser: ['Windows', 'Chrome', '1.0.0'],
     syncFullHistory: false,
   });
 
   sock.ev.on('creds.update', saveCreds);
 
-  // Baileys removed its built-in in-memory store in v6.6+, so we track
-  // known contacts ourselves. This is what Status posting relies on
-  // (see testPostStatus.js) — WhatsApp requires an explicit list of
-  // recipient JIDs for status@broadcast, it won't infer "everyone".
   sock.knownContacts = new Set();
   sock.ev.on('contacts.upsert', (contacts) => {
     for (const c of contacts) {
@@ -62,12 +52,15 @@ export async function connectWhatsApp(handlers = {}) {
     }
   });
 
-  sock.ev.on('connection.update', (update) => {
+  sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect, qr } = update;
 
     if (qr) {
-      console.log('\nScan this QR code with the vendor\'s WhatsApp (Linked Devices):\n');
-      qrcode.generate(qr, { small: true });
+      handlers.onQr?.(qr, vendor);
+      if (!handlers.onQr) {
+        console.log(`\nScan this QR code for vendor ${vendor.phone}:\n`);
+        qrcode.generate(qr, { small: true });
+      }
     }
 
     if (connection === 'close') {
@@ -75,22 +68,19 @@ export async function connectWhatsApp(handlers = {}) {
       const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
 
       console.log(
-        `Connection closed (code ${statusCode}). Reconnecting: ${shouldReconnect}`
+        `[${vendor.phone}] Connection closed (code ${statusCode}). Reconnecting: ${shouldReconnect}`
       );
 
       if (shouldReconnect) {
-        // Simple reconnect. For production, add exponential backoff
-        // so a flapping connection doesn't hammer WhatsApp's servers.
-        setTimeout(() => connectWhatsApp(handlers), 3000);
+        setTimeout(() => createVendorSocket(vendor, handlers), 3000);
       } else {
-        console.log(
-          'Session logged out. Delete the auth_state folder and re-scan the QR code.'
-        );
+        await updateVendorStatus(vendor.id, 'disconnected');
+        console.log(`[${vendor.phone}] Logged out. Vendor must re-scan QR to reconnect.`);
       }
     } else if (connection === 'open') {
-      console.log('WhatsApp connection established.');
-      console.log('sock.user:', JSON.stringify(sock.user, null, 2));
-      handlers.onReady?.(sock);
+      console.log(`[${vendor.phone}] WhatsApp connection established.`);
+      await updateVendorStatus(vendor.id, 'connected');
+      handlers.onReady?.(sock, vendor);
     }
   });
 
@@ -106,13 +96,9 @@ export async function connectWhatsApp(handlers = {}) {
         const isSelfChat = (selfJid && chatJid === selfJid) || (selfLid && chatJid === selfLid);
         const isGroupChat = chatJid.endsWith('@g.us');
 
-        // Ignore messages the bot sends to OTHER 1:1 chats (e.g. status
-        // posts, future auto-replies) — but let self-chat messages through
-        // (photo intake) and group messages through (for /register and
-        // future commands), since those are legitimate command channels.
         if (msg.key.fromMe && !isSelfChat && !isGroupChat) continue;
 
-        handlers.onMessage(msg, sock, { isSelfChat, isGroupChat });
+        handlers.onMessage(msg, sock, { isSelfChat, isGroupChat, vendorId: vendor.id });
       }
     });
   }

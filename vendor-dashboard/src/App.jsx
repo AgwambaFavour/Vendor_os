@@ -3,6 +3,8 @@ import Login from './pages/Login';
 import Orders from './pages/Orders';
 import Groups from './pages/Groups';
 import Catalogue from './pages/Catalogue';
+import Signup from './pages/Signup';
+
 
 function RequireAuth({ children }) {
   const token = localStorage.getItem('vendor_token');
@@ -30,6 +32,7 @@ export default function App() {
             </RequireAuth>
           }
         />
+        <Route path="/signup" element={<Signup />} />
         <Route
           path="/groups"
           element={

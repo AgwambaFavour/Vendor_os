@@ -1,20 +1,27 @@
 import { Router } from 'express';
 import jwt from 'jsonwebtoken';
 import { generateOtp, verifyOtp } from './otpStore.js';
+import { getVendorByPhone } from '../db/vendors.js';
+import { getVendorSocket } from '../whatsapp/socketManager.js';
 
 function normalizePhone(phone) {
   return (phone || '').replace(/\D/g, '');
 }
 
-export function authRouter(sock) {
+export function authRouter() {
   const router = Router();
-  const vendorPhone = normalizePhone(process.env.VENDOR_PHONE);
 
   router.post('/request-otp', async (req, res) => {
     const phone = normalizePhone(req.body.phone);
+    const vendor = await getVendorByPhone(phone);
 
-    if (phone !== vendorPhone) {
+    if (!vendor) {
       return res.status(403).json({ message: 'This number is not recognized.' });
+    }
+
+    const sock = getVendorSocket(vendor.id);
+    if (!sock) {
+      return res.status(503).json({ message: 'Your WhatsApp session is not connected. Please contact support.' });
     }
 
     const code = generateOtp(phone);
@@ -30,15 +37,16 @@ export function authRouter(sock) {
     }
   });
 
-  router.post('/verify-otp', (req, res) => {
+  router.post('/verify-otp', async (req, res) => {
     const phone = normalizePhone(req.body.phone);
     const { code } = req.body;
+    const vendor = await getVendorByPhone(phone);
 
-    if (phone !== vendorPhone || !verifyOtp(phone, code)) {
+    if (!vendor || !verifyOtp(phone, code)) {
       return res.status(401).json({ message: 'Invalid or expired code.' });
     }
 
-    const token = jwt.sign({ phone }, process.env.JWT_SECRET, { expiresIn: '30d' });
+    const token = jwt.sign({ vendorId: vendor.id, phone }, process.env.JWT_SECRET, { expiresIn: '30d' });
     res.json({ token });
   });
 
@@ -48,7 +56,6 @@ export function authRouter(sock) {
 export function requireAuth(req, res, next) {
   const header = req.headers.authorization || '';
   const token = header.startsWith('Bearer ') ? header.slice(7) : null;
-
   if (!token) return res.status(401).json({ message: 'Missing token.' });
 
   try {
