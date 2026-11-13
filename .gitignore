@@ -1,6 +1,7 @@
 # Secrets — never commit these
 .env
 auth_state/
+auth_state*/
 credentials/
 
 # Media (large files, don't belong in git)
