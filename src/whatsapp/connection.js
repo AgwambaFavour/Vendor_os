@@ -22,11 +22,20 @@ const logger = pino({ level: process.env.LOG_LEVEL || 'silent' });
  * Each vendor's session lives in its own folder under auth_state/,
  * keyed by vendor.auth_state_key.
  *
+ * Two ways to link a vendor's WhatsApp:
+ *  - 'qr'   (default): Baileys emits a QR code the vendor scans.
+ *  - 'code': we ask WhatsApp for an 8-character pairing code for the
+ *            vendor's phone number. The vendor opens WhatsApp → Linked
+ *            devices → Link a device → "Link with phone number instead"
+ *            and types the code. No second screen or camera needed.
+ *
  * @param {object} vendor - row from the `vendors` table
- * @param {object} handlers - { onReady, onMessage, onQr }
+ * @param {object} handlers - { onReady, onMessage, onQr, onPairingCode, onPairingError, onSocket }
+ * @param {object} options - { linkMethod: 'qr' | 'code' }
  */
-export async function createVendorSocket(vendor, handlers = {}) {
-  const AUTH_DIR = path.join(AUTH_ROOT, vendor.auth_state_key);
+export async function createVendorSocket(vendor, handlers = {}, options = {}) {
+  const linkMethod = options.linkMethod === 'code' ? 'code' : 'qr';
+  const AUTH_DIR = getAuthDir(vendor);
   const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
   const { version } = await fetchLatestBaileysVersion();
 
@@ -40,6 +49,9 @@ export async function createVendorSocket(vendor, handlers = {}) {
 
   sock.ev.on('creds.update', saveCreds);
 
+  // Let the caller track the newest socket — reconnects create new ones.
+  handlers.onSocket?.(sock, vendor);
+
   sock.knownContacts = new Set();
   sock.ev.on('contacts.upsert', (contacts) => {
     for (const c of contacts) {
@@ -52,10 +64,32 @@ export async function createVendorSocket(vendor, handlers = {}) {
     }
   });
 
+  // Only ask for one pairing code per socket. If the vendor doesn't enter
+  // it in time, WhatsApp closes the socket and the reconnect below creates
+  // a fresh socket, which requests a fresh code.
+  let pairingRequested = false;
+
   sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect, qr } = update;
 
-    if (qr) {
+    // Baileys emits `qr` once the socket is ready to be linked; that is
+    // also the right moment to request a pairing code instead.
+    if (qr && linkMethod === 'code') {
+      if (!pairingRequested && !sock.authState.creds.registered) {
+        pairingRequested = true;
+        try {
+          const code = await sock.requestPairingCode(vendor.phone);
+          if (handlers.onPairingCode) {
+            handlers.onPairingCode(code, vendor);
+          } else {
+            console.log(`\nPairing code for vendor ${vendor.phone}: ${formatPairingCode(code)}\n`);
+          }
+        } catch (err) {
+          console.error(`[${vendor.phone}] Failed to request pairing code:`, err);
+          handlers.onPairingError?.(err, vendor);
+        }
+      }
+    } else if (qr) {
       handlers.onQr?.(qr, vendor);
       if (!handlers.onQr) {
         console.log(`\nScan this QR code for vendor ${vendor.phone}:\n`);
@@ -64,6 +98,9 @@ export async function createVendorSocket(vendor, handlers = {}) {
     }
 
     if (connection === 'close') {
+      // Closed on purpose (e.g. vendor restarted linking) — don't reconnect.
+      if (sock.stoppedByVendorOs) return;
+
       const statusCode = new Boom(lastDisconnect?.error)?.output?.statusCode;
       const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
 
@@ -72,10 +109,10 @@ export async function createVendorSocket(vendor, handlers = {}) {
       );
 
       if (shouldReconnect) {
-        setTimeout(() => createVendorSocket(vendor, handlers), 3000);
+        setTimeout(() => createVendorSocket(vendor, handlers, options), 3000);
       } else {
         await updateVendorStatus(vendor.id, 'disconnected');
-        console.log(`[${vendor.phone}] Logged out. Vendor must re-scan QR to reconnect.`);
+        console.log(`[${vendor.phone}] Logged out. Vendor must link WhatsApp again to reconnect.`);
       }
     } else if (connection === 'open') {
       console.log(`[${vendor.phone}] WhatsApp connection established.`);
@@ -104,4 +141,15 @@ export async function createVendorSocket(vendor, handlers = {}) {
   }
 
   return sock;
+}
+
+/** WhatsApp shows pairing codes as XXXX-XXXX. */
+export function formatPairingCode(code) {
+  const clean = String(code || '').replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+  return clean.length === 8 ? `${clean.slice(0, 4)}-${clean.slice(4)}` : clean;
+}
+
+/** Folder holding a vendor's Baileys session files. */
+export function getAuthDir(vendor) {
+  return path.join(AUTH_ROOT, vendor.auth_state_key);
 }
